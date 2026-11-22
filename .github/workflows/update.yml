@@ -1,0 +1,31 @@
+name: Update European prices
+on:
+  schedule:
+    - cron: '30 22 * * 1-5'   # 22:30 UTC on weekdays, after European and before the 08:56 Amsterdam tracker run
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Re-download the full history'
+        type: boolean
+        default: false
+permissions:
+  contents: write
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install yfinance pandas pyarrow lxml html5lib requests pytickersymbols
+      - name: Get previous data
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: gh release download data -p eu_prices.parquet || echo "first run"
+      - name: Collect prices
+        run: python europe_data.py ${{ inputs.full && '--full' || '' }}
+      - name: Publish release assets
+        env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          gh release view data >/dev/null 2>&1 || gh release create data --title "European price data" --notes "Updated nightly by the workflow."
+          gh release upload data eu_prices.parquet eu_universe.csv eu_report.json --clobber

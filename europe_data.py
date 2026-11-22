@@ -1,0 +1,149 @@
+"""Nightly European stock price collector for the '€1,000 Strategy League' artifact.
+
+Universe: every member of each European country's main and mid-cap indices (see INDEXES), assembled each run
+from pytickersymbols and the indices' Wikipedia member tables. Prices: daily, dividend- and split-adjusted
+closes from Yahoo Finance via yfinance, in each listing's own currency, plus daily EUR exchange rates.
+Outputs (published as release assets under tag "data"):
+  eu_prices.parquet   date, ticker, adj_close, currency
+  eu_universe.csv     ticker, name, index, country, currency
+  eu_report.json      members found per index, tickers with/without data, last date
+"""
+import io, json, re, sys, time, datetime as dt, os
+import pandas as pd, requests, yfinance as yf
+from pytickersymbols import PyTickerSymbols
+
+UA={'User-Agent':'Mozilla/5.0 (eu-strategy-league data collector)'}
+# suffix -> (country, currency); London quotes are in pence (GBp)
+SUFFIX={'.L':('UK','GBp'),'.DE':('DE','EUR'),'.PA':('FR','EUR'),'.AS':('NL','EUR'),'.BR':('BE','EUR'),'.MC':('ES','EUR'),
+        '.MI':('IT','EUR'),'.LS':('PT','EUR'),'.VI':('AT','EUR'),'.IR':('IE','EUR'),'.HE':('FI','EUR'),'.SW':('CH','CHF'),
+        '.ST':('SE','SEK'),'.CO':('DK','DKK'),'.OL':('NO','NOK'),'.WA':('PL','PLN')}
+PTS_INDEXES={'AEX':'.AS','BEL 20':'.BR','CAC_40':'.PA','CAC Mid 60':'.PA','DAX':'.DE','MDAX':'.DE','SDAX':'.DE','TecDAX':'.DE',
+             'EURO STOXX 50':None,'FTSE 100':'.L','IBEX 35':'.MC','OMX Helsinki 25':'.HE','OMX Stockholm 30':'.ST','Switzerland 20':'.SW'}
+WIKI={  # index name -> (url, Yahoo suffix)
+ 'FTSE 100':('https://en.wikipedia.org/wiki/FTSE_100_Index','.L'),
+ 'FTSE 250':('https://en.wikipedia.org/wiki/FTSE_250_Index','.L'),
+ 'AEX':('https://en.wikipedia.org/wiki/AEX_index','.AS'),
+ 'AMX':('https://en.wikipedia.org/wiki/AMX_index','.AS'),
+ 'SBF 120':('https://en.wikipedia.org/wiki/SBF_120','.PA'),
+ 'CAC 40':('https://en.wikipedia.org/wiki/CAC_40','.PA'),
+ 'DAX':('https://en.wikipedia.org/wiki/DAX','.DE'),
+ 'MDAX':('https://en.wikipedia.org/wiki/MDAX','.DE'),
+ 'SDAX':('https://en.wikipedia.org/wiki/SDAX','.DE'),
+ 'FTSE MIB':('https://en.wikipedia.org/wiki/FTSE_MIB','.MI'),
+ 'FTSE Italia Mid Cap':('https://en.wikipedia.org/wiki/FTSE_Italia_Mid_Cap','.MI'),
+ 'IBEX 35':('https://en.wikipedia.org/wiki/IBEX_35','.MC'),
+ 'IBEX Medium Cap':('https://en.wikipedia.org/wiki/IBEX_Medium_Cap','.MC'),
+ 'SMI':('https://en.wikipedia.org/wiki/Swiss_Market_Index','.SW'),
+ 'SMI MID':('https://en.wikipedia.org/wiki/SMI_MID','.SW'),
+ 'OMX Stockholm 30':('https://en.wikipedia.org/wiki/OMX_Stockholm_30','.ST'),
+ 'OMX Copenhagen 25':('https://en.wikipedia.org/wiki/OMX_Copenhagen_25','.CO'),
+ 'OMX Helsinki 25':('https://en.wikipedia.org/wiki/OMX_Helsinki_25','.HE'),
+ 'OBX':('https://en.wikipedia.org/wiki/OBX_Index','.OL'),
+ 'BEL 20':('https://en.wikipedia.org/wiki/BEL_20','.BR'),
+ 'PSI':('https://en.wikipedia.org/wiki/PSI-20','.LS'),
+ 'ATX':('https://en.wikipedia.org/wiki/Austrian_Traded_Index','.VI'),
+ 'ISEQ 20':('https://en.wikipedia.org/wiki/ISEQ_20','.IR'),
+ 'WIG20':('https://en.wikipedia.org/wiki/WIG20','.WA'),
+ 'mWIG40':('https://en.wikipedia.org/wiki/MWIG40','.WA'),
+}
+TICK_COL=re.compile(r'ticker|symbol|epic|code|mnemonic|isin', re.I)
+NAME_COL=re.compile(r'company|name|constituent', re.I)
+
+def from_pts():
+    """pytickersymbols' own 'symbol' field is the home listing in Yahoo form (e.g. ADS.DE, AI.PA, ADDT-B.ST)."""
+    out=[]; s=PyTickerSymbols()
+    for idx in PTS_INDEXES:
+        for st in s.get_stocks_by_index(idx):
+            t=str(st.get('symbol') or '').upper()
+            m=re.match(r'^(.+?)(\.[A-Z]{1,2})(\.[A-Z]{1,2})?$',t)   # 'AIR.PA.DE' -> 'AIR.PA'
+            if m: t=m.group(1)+m.group(2)
+            if any(t.endswith(k) for k in SUFFIX): out.append({'ticker':t,'name':st.get('name',''),'index':idx})
+    return out
+
+def clean_ticker(t,suf):
+    t=re.sub(r'\[.*?\]','',str(t)).strip().upper()
+    t=re.sub(r'^[A-Z]{2,6}:\s*','',t)                     # 'LON: AZN' -> 'AZN'
+    if not t or t in('NAN','—','-','N/A') or re.match(r'^[A-Z]{2}[0-9A-Z]{9}[0-9]$',t): return None  # skip blanks/ISINs
+    for k in SUFFIX:
+        if t.endswith(k): return t
+    t=re.sub(r'\s+(LN|NA|FP|GY|IM|SM|SW|SE|SS|DC|NO|FH|BB|PL|AV|ID|PW)$','',t)   # Bloomberg exchange codes
+    t=re.sub(r'\.(L|LN|AS|NA|PA|FP|DE|GY|MI|IM|MC|SM|SW|SE|ST|SS|CO|DC|OL|NO|HE|FH|BR|BB|LS|PL|VI|AV|IR|ID|WA|PW)$','',t)
+    t=re.sub(r'[\s.]+','-',t).strip('-')                 # 'VOLV B' / 'BT.A' -> 'VOLV-B' / 'BT-A'
+    if not re.match(r'^[A-Z0-9][A-Z0-9-]{0,11}$',t): return None
+    return t+suf
+
+def from_wiki():
+    out=[]; report={}
+    for idx,(url,suf) in WIKI.items():
+        try:
+            html=requests.get(url,headers=UA,timeout=30).text
+            tables=pd.read_html(io.StringIO(html))
+            best=[]
+            for tb in tables:
+                cols=[str(c[-1] if isinstance(c,tuple) else c) for c in tb.columns]
+                tc=[i for i,c in enumerate(cols) if TICK_COL.search(c) and 'isin' not in c.lower()]
+                if not tc or len(tb)<8: continue
+                nc=[i for i,c in enumerate(cols) if NAME_COL.search(c)]
+                rows=[]
+                for _,r in tb.iterrows():
+                    t=clean_ticker(r.iloc[tc[0]],suf)
+                    if t: rows.append({'ticker':t,'name':str(r.iloc[nc[0]]) if nc else '','index':idx})
+                if len(rows)>len(best): best=rows
+            out+=best; report[idx]=len(best)
+        except Exception as e:
+            report[idx]=f'failed: {e.__class__.__name__}'
+        time.sleep(1)
+    return out,report
+
+def universe():
+    rows=from_pts(); wiki,wrep=from_wiki(); rows+=wiki
+    df=pd.DataFrame(rows)
+    df['suffix']=df.ticker.str.extract(r'(\.[A-Z]{1,2})$')[0]
+    df=df[df.suffix.isin(SUFFIX)]
+    df['country']=df.suffix.map(lambda s:SUFFIX[s][0]); df['currency']=df.suffix.map(lambda s:SUFFIX[s][1])
+    agg=df.groupby('ticker').agg(name=('name',lambda x:max(x,key=len)),index=('index',lambda x:', '.join(sorted(set(x)))),country=('country','first'),currency=('currency','first')).reset_index()
+    return agg,wrep
+
+def download(tickers,start):
+    frames=[]; ok=set()
+    for i in range(0,len(tickers),80):
+        chunk=tickers[i:i+80]
+        for attempt in range(3):
+            try:
+                d=yf.download(chunk,start=start,interval='1d',auto_adjust=True,progress=False,group_by='ticker',threads=True)
+                break
+            except Exception: time.sleep(20*(attempt+1)); d=None
+        if d is None or d.empty: continue
+        for t in chunk:
+            try: s=d[t]['Close'] if len(chunk)>1 else d['Close']
+            except KeyError: continue
+            s=s.dropna()
+            if len(s): frames.append(pd.DataFrame({'date':s.index.date,'ticker':t,'adj_close':s.values.astype(float)})); ok.add(t)
+        time.sleep(3)
+    return (pd.concat(frames) if frames else pd.DataFrame(columns=['date','ticker','adj_close'])),ok
+
+def main():
+    full='--full' in sys.argv
+    uni,wrep=universe(); uni.to_csv('eu_universe.csv',index=False)
+    old=None
+    if not full and os.path.exists('eu_prices.parquet'): old=pd.read_parquet('eu_prices.parquet')
+    if old is not None and len(old):
+        known=set(old.ticker); new=[t for t in uni.ticker if t not in known]
+        upd,ok1=download([t for t in uni.ticker if t in known],(dt.date.today()-dt.timedelta(days=14)).isoformat())
+        hist,ok2=download(new,'2016-01-01') if new else (pd.DataFrame(columns=upd.columns),set())
+        px=pd.concat([old,upd,hist]); ok=ok1|ok2|known
+    else:
+        px,ok=download(list(uni.ticker),'2016-01-01')
+    px['date']=pd.to_datetime(px.date).dt.date
+    px=px.drop_duplicates(['date','ticker'],keep='last').sort_values(['ticker','date'])
+    px=px.merge(uni[['ticker','currency']],on='ticker',how='left')
+    # EUR exchange rates (units of currency per 1 EUR); GBp handled downstream as GBP/100
+    fx,_=download(['EURUSD=X','EURGBP=X','EURCHF=X','EURSEK=X','EURDKK=X','EURNOK=X','EURPLN=X'],'2016-01-01')
+    fx['currency']='FX'
+    pd.concat([px,fx]).to_parquet('eu_prices.parquet',index=False)
+    rep={'run':dt.datetime.utcnow().isoformat(timespec='minutes')+'Z','universe':int(len(uni)),'with_data':int(px.ticker.nunique()),
+         'missing':sorted(set(uni.ticker)-set(px.ticker))[:300],'last_date':str(px.date.max()),'wikipedia_members_found':wrep,
+         'by_country':uni.country.value_counts().to_dict()}
+    json.dump(rep,open('eu_report.json','w'),indent=1); print(json.dumps({k:v for k,v in rep.items() if k!='missing'},indent=1))
+
+if __name__=='__main__': main()
