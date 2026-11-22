@@ -72,6 +72,7 @@ def clean_ticker(t,suf):
     if not re.match(r'^[A-Z0-9][A-Z0-9-]{0,11}$',t): return None
     return t+suf
 
+DEBUG={}
 def from_wiki():
     out=[]; report={}
     for idx,(url,suf) in WIKI.items():
@@ -90,8 +91,9 @@ def from_wiki():
                     if t: rows.append({'ticker':t,'name':str(r.iloc[nc[0]]) if nc else '','index':idx})
                 if len(rows)>len(best): best=rows
             out+=best; report[idx]=len(best)
+            if not best: DEBUG[idx]=[[str(c) for c in tb.columns][:8] for tb in tables[:6]]
         except Exception as e:
-            report[idx]=f'failed: {e.__class__.__name__}'
+            report[idx]=f'failed: {e.__class__.__name__}: {str(e)[:80]}'
         time.sleep(1)
     return out,report
 
@@ -143,7 +145,7 @@ def main():
     pd.concat([px,fx]).to_parquet('eu_prices.parquet',index=False)
     rep={'run':dt.datetime.utcnow().isoformat(timespec='minutes')+'Z','universe':int(len(uni)),'with_data':int(px.ticker.nunique()),
          'missing':sorted(set(uni.ticker)-set(px.ticker))[:300],'last_date':str(px.date.max()),'wikipedia_members_found':wrep,
-         'by_country':uni.country.value_counts().to_dict()}
+         'by_country':uni.country.value_counts().to_dict(),'debug_tables':DEBUG}
     json.dump(rep,open('eu_report.json','w'),indent=1); print(json.dumps({k:v for k,v in rep.items() if k!='missing'},indent=1))
 
 if __name__=='__main__': main()
