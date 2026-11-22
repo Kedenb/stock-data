@@ -57,6 +57,8 @@ def from_pts():
             t=str(st.get('symbol') or '').upper()
             m=re.match(r'^(.+?)(\.[A-Z]{1,2})(\.[A-Z]{1,2})?$',t)   # 'AIR.PA.DE' -> 'AIR.PA'
             if m: t=m.group(1)+m.group(2)
+            if not any(t.endswith(k) for k in SUFFIX) and PTS_INDEXES.get(idx) and t and '.' not in t:
+                t=re.sub(r'[\s.]+','-',t)+PTS_INDEXES[idx]
             if any(t.endswith(k) for k in SUFFIX): out.append({'ticker':t,'name':st.get('name',''),'index':idx})
     return out
 
@@ -73,6 +75,49 @@ def clean_ticker(t,suf):
     return t+suf
 
 DEBUG={}
+def search_ticker(name,suf):
+    """Find the home-exchange Yahoo ticker for a company name (used when an index table lists names only)."""
+    if not name or name.lower()=='nan': return None
+    try:
+        q=yf.Search(name,max_results=10).quotes
+    except Exception: return None
+    for x in q:
+        sym=str(x.get('symbol',''))
+        if sym.upper().endswith(suf) and x.get('quoteType') in ('EQUITY',None): return sym.upper()
+    return None
+
+# iShares STOXX Europe 600 UCITS ETF holdings (Europe's 600 largest companies across 17 countries)
+ISHARES=[
+ ('STOXX Europe 600','https://www.ishares.com/de/privatanleger/de/produkte/251931/ishares-stoxx-europe-600-ucits-etf-de-fund/1478358465952.ajax?fileType=csv&fileName=EXSA_holdings&dataType=fund'),
+ ('STOXX Europe 600','https://www.ishares.com/uk/individual/en/products/251931/ishares-stoxx-europe-600-ucits-etf-de-fund/1506575576011.ajax?fileType=csv&fileName=EXSA_holdings&dataType=fund'),
+]
+EXCH={'xetra':'.DE','frankfurt':'.DE','euronext amsterdam':'.AS','euronext paris':'.PA','nyse euronext - euronext paris':'.PA','euronext brussels':'.BR',
+      'euronext lisbon':'.LS','euronext dublin':'.IR','irish':'.IR','london':'.L','borsa italiana':'.MI','milan':'.MI','bolsa de madrid':'.MC','madrid':'.MC',
+      'six swiss':'.SW','swiss':'.SW','stockholm':'.ST','helsinki':'.HE','copenhagen':'.CO','oslo':'.OL','wiener':'.VI','vienna':'.VI','warsaw':'.WA'}
+def from_ishares():
+    rep={}
+    for name,url in ISHARES:
+        try:
+            txt=requests.get(url,headers=UA,timeout=60).content.decode('utf-8-sig',errors='replace')
+            lines=txt.splitlines(); start=next(i for i,l in enumerate(lines) if re.match(r'^"?(Emittententicker|Ticker|Issuer Ticker)',l))
+            df=pd.read_csv(io.StringIO('\n'.join(lines[start:])),dtype=str)
+            tcol=df.columns[0]; ncol=next((c for c in df.columns if re.search(r'^name$',c,re.I)),df.columns[1])
+            xcol=next((c for c in df.columns if re.search(r'b(ö|o)rse|exchange',c,re.I)),None)
+            acol=next((c for c in df.columns if re.search(r'anlageklasse|asset class',c,re.I)),None)
+            rows=[]
+            for _,r in df.iterrows():
+                if acol and not re.search(r'aktie|equity',str(r[acol]),re.I): continue
+                ex=str(r[xcol]).lower() if xcol else ''
+                suf=next((v for k,v in EXCH.items() if k in ex),None)
+                if not suf: continue
+                t=clean_ticker(r[tcol],suf)
+                if t: rows.append({'ticker':t,'name':str(r[ncol]).title(),'index':name})
+            rep[url.split('/')[2]+':'+name]=len(rows)
+            if len(rows)>300: return rows,rep
+        except Exception as e:
+            rep[url.split('/')[2]+':'+name]=f'failed: {e.__class__.__name__}: {str(e)[:80]}'
+    return [],rep
+
 def from_wiki():
     out=[]; report={}
     for idx,(url,suf) in WIKI.items():
@@ -83,7 +128,17 @@ def from_wiki():
             for tb in tables:
                 cols=[str(c[-1] if isinstance(c,tuple) else c) for c in tb.columns]
                 tc=[i for i,c in enumerate(cols) if TICK_COL.search(c) and 'isin' not in c.lower()]
-                if not tc or len(tb)<8: continue
+                if len(tb)<8: continue
+                if not tc:
+                    nc=[i for i,c in enumerate(cols) if NAME_COL.search(c)]
+                    if not nc or best: continue
+                    rows=[]
+                    for _,r in tb.iterrows():
+                        nm=re.sub(r'\[.*?\]','',str(r.iloc[nc[0]])).strip()
+                        t=search_ticker(nm,suf)
+                        if t: rows.append({'ticker':t,'name':nm,'index':idx})
+                    if len(rows)>len(best): best=rows
+                    continue
                 nc=[i for i,c in enumerate(cols) if NAME_COL.search(c)]
                 rows=[]
                 for _,r in tb.iterrows():
@@ -99,6 +154,7 @@ def from_wiki():
 
 def universe():
     rows=from_pts(); wiki,wrep=from_wiki(); rows+=wiki
+    ish,irep=from_ishares(); rows+=ish; wrep.update(irep)
     df=pd.DataFrame(rows)
     df['suffix']=df.ticker.str.extract(r'(\.[A-Z]{1,2})$')[0]
     df=df[df.suffix.isin(SUFFIX)]
