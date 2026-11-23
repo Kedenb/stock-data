@@ -130,6 +130,7 @@ def from_nasdaq_nordic():
             r=requests.get(url,headers={**UA,'Accept':'application/json'},timeout=60)
             DEBUG[f'nasdaq {mk}']=[r.status_code,r.headers.get('content-type'),r.text[:700]]
             js=r.json(); rows=js.get('data',{}).get('instrumentListing',{}).get('rows') or js.get('data',{}).get('rows') or []
+            DEBUG[f'nasdaq {mk}']=[len(rows),list(js.get('data',{}).keys()),json.dumps(rows[:2])[:1500],json.dumps({k:v for k,v in js.get('data',{}).items() if k!='instrumentListing'})[:1500]]
             n=0
             for x in rows:
                 seg=' '.join(str(v) for v in x.values()).lower()
