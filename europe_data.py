@@ -120,6 +120,27 @@ def from_ishares():
             rep[url.split('/')[2]+':'+name]=f'failed: {e.__class__.__name__}: {str(e)[:80]}'
     return allrows,rep
 
+NORDIC={'STO':'.ST','CPH':'.CO','HEL':'.HE'}
+def from_nasdaq_nordic():
+    """Nasdaq Nordic main-market share lists; keeps Large Cap and Mid Cap segments."""
+    out=[]; rep={}
+    for mk,suf in NORDIC.items():
+        url=f'https://api.nasdaq.com/api/nordic/screener/shares?category=MAIN_MARKET&tableonly=false&market={mk}'
+        try:
+            r=requests.get(url,headers={**UA,'Accept':'application/json'},timeout=60)
+            DEBUG[f'nasdaq {mk}']=[r.status_code,r.headers.get('content-type'),r.text[:700]]
+            js=r.json(); rows=js.get('data',{}).get('instrumentListing',{}).get('rows') or js.get('data',{}).get('rows') or []
+            n=0
+            for x in rows:
+                seg=' '.join(str(v) for v in x.values()).lower()
+                if 'small cap' in seg or ('large cap' not in seg and 'mid cap' not in seg): continue
+                t=clean_ticker(x.get('symbol') or x.get('fullName') or '',suf)
+                if t: out.append({'ticker':t,'name':x.get('fullName') or x.get('companyName') or '','index':f'Nasdaq {mk} Large/Mid Cap'}); n+=1
+            rep[f'Nasdaq Nordic {mk} large+mid']=n
+        except Exception as e: rep[f'Nasdaq Nordic {mk} large+mid']=f'failed: {e.__class__.__name__}: {str(e)[:80]}'
+        time.sleep(1)
+    return out,rep
+
 def from_wiki():
     out=[]; report={}
     for idx,(url,suf) in WIKI.items():
@@ -157,6 +178,7 @@ def from_wiki():
 def universe():
     rows=from_pts(); wiki,wrep=from_wiki(); rows+=wiki
     ish,irep=from_ishares(); rows+=ish; wrep.update(irep)
+    nn,nrep=from_nasdaq_nordic(); rows+=nn; wrep.update(nrep)
     df=pd.DataFrame(rows)
     df['suffix']=df.ticker.str.extract(r'(\.[A-Z]{1,2})$')[0]
     df=df[df.suffix.isin(SUFFIX)]
