@@ -12,7 +12,7 @@ import io, json, re, sys, time, datetime as dt, os
 import pandas as pd, requests, yfinance as yf
 from pytickersymbols import PyTickerSymbols
 
-UA={'User-Agent':'Mozilla/5.0 (eu-strategy-league data collector)'}
+UA={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36','Accept':'text/csv,text/plain,*/*'}
 # suffix -> (country, currency); London quotes are in pence (GBp)
 SUFFIX={'.L':('UK','GBp'),'.DE':('DE','EUR'),'.PA':('FR','EUR'),'.AS':('NL','EUR'),'.BR':('BE','EUR'),'.MC':('ES','EUR'),
         '.MI':('IT','EUR'),'.LS':('PT','EUR'),'.VI':('AT','EUR'),'.IR':('IE','EUR'),'.HE':('FI','EUR'),'.SW':('CH','CHF'),
@@ -89,19 +89,20 @@ def search_ticker(name,suf):
 # iShares STOXX Europe 600 UCITS ETF holdings (Europe's 600 largest companies across 17 countries)
 ISHARES=[
  ('STOXX Europe 600','https://www.ishares.com/de/privatanleger/de/produkte/251931/ishares-stoxx-europe-600-ucits-etf-de-fund/1478358465952.ajax?fileType=csv&fileName=EXSA_holdings&dataType=fund'),
- ('STOXX Europe 600','https://www.ishares.com/uk/individual/en/products/251931/ishares-stoxx-europe-600-ucits-etf-de-fund/1506575576011.ajax?fileType=csv&fileName=EXSA_holdings&dataType=fund'),
+ ('S&P Europe 350','https://www.ishares.com/us/products/239740/ishares-europe-etf/1467271812596.ajax?fileType=csv&fileName=IEV_holdings&dataType=fund'),
 ]
 EXCH={'xetra':'.DE','frankfurt':'.DE','euronext amsterdam':'.AS','euronext paris':'.PA','nyse euronext - euronext paris':'.PA','euronext brussels':'.BR',
       'euronext lisbon':'.LS','euronext dublin':'.IR','irish':'.IR','london':'.L','borsa italiana':'.MI','milan':'.MI','bolsa de madrid':'.MC','madrid':'.MC',
       'six swiss':'.SW','swiss':'.SW','stockholm':'.ST','helsinki':'.HE','copenhagen':'.CO','oslo':'.OL','wiener':'.VI','vienna':'.VI','warsaw':'.WA'}
 def from_ishares():
-    rep={}
+    rep={}; allrows=[]
     for name,url in ISHARES:
         try:
             resp=requests.get(url,headers=UA,timeout=60); txt=resp.content.decode('utf-8-sig',errors='replace')
-            DEBUG['ishares '+url.split('/')[2]]=[resp.status_code,resp.headers.get('content-type'),txt[:600]]
-            lines=txt.splitlines(); start=next(i for i,l in enumerate(lines) if re.match(r'^"?(Emittententicker|Ticker|Issuer Ticker)',l))
-            df=pd.read_csv(io.StringIO('\n'.join(lines[start:])),dtype=str)
+            DEBUG[f'ishares {name} {url[:60]}']=[resp.status_code,resp.headers.get('content-type'),txt[:900]]
+            lines=txt.splitlines(); start=next(i for i,l in enumerate(lines) if re.search(r'(Emittententicker|Ticker)',l))
+            sep=';' if lines[start].count(';')>lines[start].count(',') else ','
+            df=pd.read_csv(io.StringIO('\n'.join(lines[start:])),dtype=str,sep=sep,on_bad_lines='skip')
             tcol=df.columns[0]; ncol=next((c for c in df.columns if re.search(r'^name$',c,re.I)),df.columns[1])
             xcol=next((c for c in df.columns if re.search(r'b(ö|o)rse|exchange',c,re.I)),None)
             acol=next((c for c in df.columns if re.search(r'anlageklasse|asset class',c,re.I)),None)
@@ -114,10 +115,10 @@ def from_ishares():
                 t=clean_ticker(r[tcol],suf)
                 if t: rows.append({'ticker':t,'name':str(r[ncol]).title(),'index':name})
             rep[url.split('/')[2]+':'+name]=len(rows)
-            if len(rows)>300: return rows,rep
+            if len(rows)>300: allrows.extend(rows)
         except Exception as e:
             rep[url.split('/')[2]+':'+name]=f'failed: {e.__class__.__name__}: {str(e)[:80]}'
-    return [],rep
+    return allrows,rep
 
 def from_wiki():
     out=[]; report={}
