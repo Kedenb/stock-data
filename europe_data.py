@@ -122,24 +122,22 @@ def from_ishares():
 
 NORDIC={'STO':'.ST','CPH':'.CO','HEL':'.HE'}
 def from_nasdaq_nordic():
-    """Nasdaq Nordic main-market share lists; keeps Large Cap and Mid Cap segments."""
+    """Nasdaq Nordic main-market shares in the Large Cap and Mid Cap segments (Stockholm, Copenhagen, Helsinki)."""
     out=[]; rep={}
     for mk,suf in NORDIC.items():
-        url=f'https://api.nasdaq.com/api/nordic/screener/shares?category=MAIN_MARKET&tableonly=false&market={mk}'
-        try:
-            r=requests.get(url,headers={**UA,'Accept':'application/json'},timeout=60)
-            DEBUG[f'nasdaq {mk}']=[r.status_code,r.headers.get('content-type'),r.text[:700]]
-            js=r.json(); rows=js.get('data',{}).get('instrumentListing',{}).get('rows') or js.get('data',{}).get('rows') or []
-            DEBUG[f'nasdaq {mk}']=[len(rows),list(js.get('data',{}).keys()),json.dumps(rows[:2])[:1500],json.dumps({k:v for k,v in js.get('data',{}).items() if k!='instrumentListing'})[:1500]]
-            n=0
-            for x in rows:
-                seg=' '.join(str(v) for v in x.values()).lower()
-                if 'small cap' in seg or ('large cap' not in seg and 'mid cap' not in seg): continue
-                t=clean_ticker(x.get('symbol') or x.get('fullName') or '',suf)
-                if t: out.append({'ticker':t,'name':x.get('fullName') or x.get('companyName') or '','index':f'Nasdaq {mk} Large/Mid Cap'}); n+=1
-            rep[f'Nasdaq Nordic {mk} large+mid']=n
-        except Exception as e: rep[f'Nasdaq Nordic {mk} large+mid']=f'failed: {e.__class__.__name__}: {str(e)[:80]}'
-        time.sleep(1)
+        for seg in ('LARGE_CAP','MID_CAP'):
+            url=f'https://api.nasdaq.com/api/nordic/screener/shares?category=MAIN_MARKET&tableonly=false&market={mk}&segment={seg}'
+            try:
+                js=requests.get(url,headers={**UA,'Accept':'application/json'},timeout=60).json()
+                rows=js.get('data',{}).get('instrumentListing',{}).get('rows') or []
+                n=0
+                for x in rows:
+                    if x.get('assetClass') not in (None,'','SHARES'): continue
+                    t=clean_ticker(x.get('symbol') or '',suf)
+                    if t: out.append({'ticker':t,'name':x.get('fullName',''),'index':f'Nasdaq {mk} {seg.replace("_"," ").title()}'}); n+=1
+                rep[f'Nasdaq {mk} {seg}']=n
+            except Exception as e: rep[f'Nasdaq {mk} {seg}']=f'failed: {e.__class__.__name__}: {str(e)[:80]}'
+            time.sleep(1)
     return out,rep
 
 def from_wiki():
