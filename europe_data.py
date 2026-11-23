@@ -98,7 +98,8 @@ def from_ishares():
     rep={}
     for name,url in ISHARES:
         try:
-            txt=requests.get(url,headers=UA,timeout=60).content.decode('utf-8-sig',errors='replace')
+            resp=requests.get(url,headers=UA,timeout=60); txt=resp.content.decode('utf-8-sig',errors='replace')
+            DEBUG['ishares '+url.split('/')[2]]=[resp.status_code,resp.headers.get('content-type'),txt[:600]]
             lines=txt.splitlines(); start=next(i for i,l in enumerate(lines) if re.match(r'^"?(Emittententicker|Ticker|Issuer Ticker)',l))
             df=pd.read_csv(io.StringIO('\n'.join(lines[start:])),dtype=str)
             tcol=df.columns[0]; ncol=next((c for c in df.columns if re.search(r'^name$',c,re.I)),df.columns[1])
