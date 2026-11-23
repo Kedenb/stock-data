@@ -162,8 +162,10 @@ def from_wiki():
                     if len(rows)>len(best): best=rows
                     continue
                 nc=[i for i,c in enumerate(cols) if NAME_COL.search(c)]
+                sc=[i for i,c in enumerate(cols) if re.search(r'sector|industry',c,re.I)]
                 rows=[]
                 for _,r in tb.iterrows():
+                    if sc and re.search(r'closed.end|investment trust|investment compan|equity investment instrument',str(r.iloc[sc[0]]),re.I): continue  # listed funds
                     t=clean_ticker(r.iloc[tc[0]],suf)
                     if t: rows.append({'ticker':t,'name':str(r.iloc[nc[0]]) if nc else '','index':idx})
                 if len(rows)>len(best): best=rows
