@@ -59,6 +59,8 @@ def from_pts():
             if m: t=m.group(1)+m.group(2)
             if not any(t.endswith(k) for k in SUFFIX) and PTS_INDEXES.get(idx) and t and '.' not in t:
                 t=re.sub(r'[\s.]+','-',t)+PTS_INDEXES[idx]
+            ind=' | '.join(st.get('industries') or []).lower()
+            if re.search(r'(?<!real estate )investment trusts|collective investments',ind): continue   # listed funds
             if any(t.endswith(k) for k in SUFFIX): out.append({'ticker':t,'name':st.get('name',''),'index':idx})
     return out
 
@@ -183,6 +185,8 @@ def universe():
     df=pd.DataFrame(rows)
     df['suffix']=df.ticker.str.extract(r'(\.[A-Z]{1,2})$')[0]
     df=df[df.suffix.isin(SUFFIX)]
+    UKFUND=re.compile(r'investment (trust|company|companies)|\binvestments?\b|infrastructure|partnerships?$|\bfund\b|\bwitan\b|(?<!estate investment )\btrust( plc)?$|\bincome\b',re.I)
+    df=df[~((df.suffix=='.L')&df.name.fillna('').str.contains(UKFUND)&~df.name.fillna('').str.contains(r'reit|real estate|property',case=False))]
     df['country']=df.suffix.map(lambda s:SUFFIX[s][0]); df['currency']=df.suffix.map(lambda s:SUFFIX[s][1])
     agg=df.groupby('ticker').agg(name=('name',lambda x:max(x,key=len)),index=('index',lambda x:', '.join(sorted(set(x)))),country=('country','first'),currency=('currency','first')).reset_index()
     return agg,wrep
