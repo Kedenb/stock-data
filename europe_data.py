@@ -184,7 +184,9 @@ def main():
     full='--full' in sys.argv
     uni,wrep=universe(); uni.to_csv('eu_universe.csv',index=False)
     old=None
-    if not full and os.path.exists('eu_prices.parquet'): old=pd.read_parquet('eu_prices.parquet')
+    if not full and os.path.exists('eu_prices.parquet'):
+        old=pd.read_parquet('eu_prices.parquet'); old=old[old.currency!='FX'][['date','ticker','adj_close']]
+        old=old[old.ticker.isin(set(uni.ticker))]
     if old is not None and len(old):
         known=set(old.ticker); new=[t for t in uni.ticker if t not in known]
         upd,ok1=download([t for t in uni.ticker if t in known],(dt.date.today()-dt.timedelta(days=14)).isoformat())
